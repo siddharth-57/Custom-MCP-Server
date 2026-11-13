@@ -14,8 +14,24 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 
 
+# Setup for multi server orchestration
+import sys
+from langchain.messages import SystemMessage
+
+# server config
+WORKSPACE = str(Path("workspace").resolve())  # absolute path to the allowed folder
+CONFIG = {
+    "mcpServers": {
+        "todo": {"command": sys.executable, "args": ["server.py"]},
+        "files": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", WORKSPACE],
+        },
+    }
+}
+
 async def main():
-    async with MCPAdapter(Path("server.py")) as adapter:
+    async with MCPAdapter(CONFIG) as adapter:
         tools = await adapter.list_tools()
         tools_by_name = {t.name: t for t in tools}
 
@@ -23,9 +39,19 @@ async def main():
         model = ChatOllama(model="qwen3:8b", reasoning=False).bind_tools(tools)
 
         # Node 1: ask the LLM what to do next
+
+# without the system prompt, the model doesn’t know which folder it’s allowed to use. 
+# Without it, it would guess a path like tasks.md, and the server would reject anything outside the allowed folder. 
+# The prompt is added on every LLM call but not saved into the conversation state.
+        system = SystemMessage(
+            f"You manage a to-do list and can save files. "
+            f"Only save files inside {WORKSPACE}, using full paths."
+        )
+
         async def call_llm(state: MessagesState):
-            response = await model.ainvoke(state["messages"])
+            response = await model.ainvoke([system] + state["messages"])
             return {"messages": [response]}
+
 
         # Node 2: run every tool the LLM requested
         async def run_tools(state: MessagesState):
